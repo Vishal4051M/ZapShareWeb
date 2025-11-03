@@ -799,6 +799,19 @@
           <p class="hint">Enter the 8-digit code to fetch files</p>
         </div>
 
+        <div class="input-group">
+          <label class="label" for="manualHostInput">Direct host (optional)</label>
+          <input
+            type="text"
+            id="manualHostInput"
+            class="code-input"
+            placeholder="172.18.143.122:8080"
+            autocomplete="off"
+            spellcheck="false"
+          >
+          <p class="hint">If the site can't auto-find the device, enter the device IP and port (ip:port) or add <code>?host=ip:port</code> to the URL.</p>
+        </div>
+
         <button id="fetchBtn" class="connect-btn">
           <div class="btn-content">
             <span id="fetchBtnText">Fetch Files</span>
@@ -901,25 +914,47 @@
         return;
       }
 
-      const url = `http://${ip}:8090`;
-      
-      // Show loading state
-      setLoading(true);
-      showSuccess(`Connecting to ${ip}...`);
+      // Allow manual host override (useful when the page is hosted remotely)
+      const manualHost = (manualHostInput && manualHostInput.value.trim()) ? manualHostInput.value.trim() : null;
 
-      // Test if device is reachable
-      testConnection(url).then(reachable => {
-        setLoading(false);
-        
-        if (reachable) {
-          showSuccess(`Connected! Redirecting to device...`);
-          setTimeout(() => {
-            window.location.href = url;
-          }, 1000);
+      // Choose protocol based on current page security to avoid mixed-content fetches.
+      // If this page is served over HTTPS, prefer HTTPS for the target so the
+      // browser doesn't block the navigation due to mixed content when possible.
+      const pageIsSecure = window.location.protocol === 'https:';
+      const defaultPort = 8080; // receiver uses 8080
+      let targetBase;
+      if (manualHost) {
+        // If user provided a protocol, use it; otherwise prefer https on secure page.
+        if (manualHost.startsWith('http')) {
+          targetBase = manualHost;
         } else {
-          showError(`Cannot reach device at ${ip}. Make sure the ZapShare app is running and you're on the same network.`);
+          targetBase = (pageIsSecure ? `https://${manualHost}` : `http://${manualHost}`);
         }
-      });
+      } else {
+        targetBase = (pageIsSecure ? `https://${ip}:${defaultPort}` : `http://${ip}:${defaultPort}`);
+      }
+
+      // Direct navigation: avoid fetch() checks which modern browsers block when
+      // performed from an HTTPS page to an HTTP resource. Use a user-initiated
+      // navigation so the browser treats it as explicit (and shows security UI
+      // if certificate is untrusted).
+      setLoading(true);
+      showSuccess(`Opening ${targetBase}...`);
+
+      // Offer the user a confirmation (this is a user gesture and helps bypass
+      // mixed-content preflight blocks). If the target uses HTTPS but has an
+      // untrusted/self-signed certificate the browser will show its warning and
+      // the user can accept it to proceed.
+      setTimeout(() => {
+        setLoading(false);
+        const open = confirm(`Open connection to ${targetBase}?\n\nIf the receiver uses a self-signed certificate you may see a browser security warning — you can proceed to accept the certificate.`);
+        if (open) {
+          // Use top-level navigation (user gesture)
+          window.location.href = targetBase;
+        } else {
+          showError('Cancelled. You can also try entering the host manually below.');
+        }
+      }, 200);
     }
 
     // RECEIVE TAB LOGIC
@@ -933,6 +968,23 @@
     const fileList = document.getElementById('fileList');
     const filesCount = document.getElementById('filesCount');
     const downloadAllBtn = document.getElementById('downloadAllBtn');
+
+    // Manual host input (optional) - useful when site is hosted remotely
+    const manualHostInput = document.getElementById('manualHostInput');
+    // Read ?host=ip:port from URL if provided
+    const urlHostParam = new URLSearchParams(window.location.search).get('host');
+    if (urlHostParam && manualHostInput) {
+      manualHostInput.value = urlHostParam;
+    } else if (manualHostInput && localStorage.getItem('zapshare_manual_host')) {
+      manualHostInput.value = localStorage.getItem('zapshare_manual_host');
+    }
+
+    if (manualHostInput) {
+      manualHostInput.addEventListener('input', (e) => {
+        localStorage.setItem('zapshare_manual_host', e.target.value.trim());
+        hideReceiveMessages();
+      });
+    }
 
     let currentDeviceIp = null;
     let currentFiles = [];
@@ -966,10 +1018,24 @@
         showReceiveError('Invalid code format');
         return;
       }
-
+      // Allow manual override via host input (ip:port) or ?host=ip:port
+      const manualHost = (manualHostInput && manualHostInput.value.trim()) ? manualHostInput.value.trim() : null;
       currentDeviceIp = ip;
-      const url = `http://${ip}:8080/list`;
-      
+
+      // Choose protocol based on current page security to avoid mixed-content blocks
+      const pageIsSecure = window.location.protocol === 'https:';
+      let url;
+      if (manualHost) {
+        // If user provided a protocol, use it; otherwise pick based on page protocol
+        if (manualHost.startsWith('http')) {
+          url = `${manualHost.replace(/\/$/, '')}/list`;
+        } else {
+          url = `${pageIsSecure ? `https://${manualHost}` : `http://${manualHost}`}/list`;
+        }
+      } else {
+        url = `${pageIsSecure ? `https://${ip}:8080` : `http://${ip}:8080`}/list`;
+      }
+
       setFetchLoading(true);
       showReceiveSuccess(`Fetching files from ${ip}...`);
 
@@ -994,7 +1060,39 @@
         }
       } catch (error) {
         setFetchLoading(false);
-        showReceiveError(`Cannot reach device at ${ip}. Make sure the device is sharing files and you're on the same network.`);
+        // Provide guidance about manual host override when hosted statically
+        let hint = `Cannot reach device at ${ip}. Make sure the device is sharing files and you're on the same network.`;
+        if (manualHostInput) hint += ' Or enter the device host (ip:port) below or add ?host=ip:port to the URL.';
+
+        // If the page is HTTPS and we attempted an HTTP request, give a mixed-content hint and a direct-open fallback
+        if (window.location.protocol === 'https:' && url && url.startsWith('http://')) {
+          hint += '\n\nBecause this page is served over HTTPS, your browser may block insecure HTTP requests (mixed content).';
+
+          // Build an explicit HTTP base URL for navigation fallback (without /list)
+          let openBase;
+          if (manualHost) {
+            openBase = manualHost.startsWith('http') ? manualHost.replace(/\/$/, '') : `http://${manualHost}`;
+          } else {
+            openBase = `http://${ip}:8080`;
+          }
+
+          const openLink = `<div style="margin-top:8px;"><a href="${openBase}" target="_blank" rel="noopener noreferrer" style="color:#FFEB3B; text-decoration:underline;">Open ${openBase} in a new tab</a></div>`;
+
+          // On mobile Chromium, a visible button that uses a direct user gesture is often more reliable
+          if (isMobileChromium()) {
+            const btnHtml = `<div style="margin-top:10px;"><button class="connect-btn" onclick="openDeviceUrl('${openBase.replace(/'/g, '\\' + "'")}')">Open device (HTTP)</button></div>`;
+            receiveErrorMessage.innerHTML = escapeHtml(hint).replace(/\n/g, '<br>') + openLink + btnHtml;
+          } else {
+            // sanitize the hint text then append the open link
+            receiveErrorMessage.innerHTML = escapeHtml(hint).replace(/\n/g, '<br>') + openLink;
+          }
+
+          receiveErrorMessage.style.display = 'block';
+          receiveSuccessMessage.style.display = 'none';
+        } else {
+          showReceiveError(hint);
+        }
+
         filesContainer.style.display = 'none';
       }
     }
@@ -1059,15 +1157,43 @@
     }
 
     function downloadFile(index, fileName) {
-      if (!currentDeviceIp) return;
-      
-      const url = `http://${currentDeviceIp}:8080/file/${index}`;
+      if (!currentDeviceIp && !(manualHostInput && manualHostInput.value.trim())) return;
+      const manualHost = (manualHostInput && manualHostInput.value.trim()) ? manualHostInput.value.trim() : null;
+      const pageIsSecure = window.location.protocol === 'https:';
+      const base = manualHost ? (manualHost.startsWith('http') ? manualHost : `${pageIsSecure ? `https://${manualHost}` : `http://${manualHost}`}`) : `${pageIsSecure ? `https://${currentDeviceIp}:8080` : `http://${currentDeviceIp}:8080`}`;
+      const url = `${base.replace(/\/$/, '')}/file/${index}`;
       const link = document.createElement('a');
       link.href = url;
       link.download = fileName;
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
+    }
+
+    // Helper to open the device URL in a new tab/window (user gesture)
+    function openDeviceUrl(url) {
+      try {
+        window.open(url, '_blank', 'noopener');
+      } catch (e) {
+        // Fallback: create anchor and click
+        const a = document.createElement('a');
+        a.href = url;
+        a.target = '_blank';
+        a.rel = 'noopener';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+      }
+    }
+
+    // Detect mobile Chromium browsers (common case where fetch upgrades/blocks to https)
+    function isMobileChromium() {
+      try {
+        const ua = navigator.userAgent || '';
+        return /Android/.test(ua) && /Chrome/.test(ua);
+      } catch (e) {
+        return false;
+      }
     }
 
     downloadAllBtn.addEventListener('click', () => {
