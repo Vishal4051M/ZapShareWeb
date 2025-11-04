@@ -1048,6 +1048,9 @@
   setFetchLoading(true);
   showReceiveSuccess(`Fetching files from ${ip}...`);
 
+  // Normalize device URL: force http for private/local IPs to avoid accidental HTTPS
+  url = normalizeDeviceUrl(url);
+
   // Debug: log the URL we're about to fetch so failures can be diagnosed
   console.log('[zapshare] fetchFiles url=', url, 'manualHost=', manualHost);
 
@@ -1077,21 +1080,46 @@
         setFetchLoading(false);
         console.error('[zapshare] fetchFiles failed for', url, error);
 
-        // Always offer a direct HTTP fallback link to the decoded IP on port 8080.
-        const hint = `Cannot reach device at ${ip}. Showing a direct link you can open instead.`;
-
         // Hide manual host input (per request) when fetch fails and show only the decoded link
         hideManualHostInput();
 
-        const openBase = `http://${ip}:8080`;
+        const openBase = normalizeDeviceUrl(`http://${ip}:8080`);
+
+        // Detect CORS or network-level failures and show tailored help
+        const errText = error && error.toString ? error.toString() : String(error);
+        let hint;
+        if (/CORS|cross-origin|Failed to fetch|NetworkError|TypeError/i.test(errText)) {
+          hint = `Failed to fetch from the device due to a network/CORS error. This usually means the device does not allow cross-origin requests from this page. Open the device directly or allow CORS on the device.`;
+        } else {
+          hint = `Cannot reach device at ${ip}. Showing a direct link you can open instead.`;
+        }
 
         // Show the hint plus the raw error so the user/dev can diagnose
-        receiveErrorMessage.innerHTML = `${escapeHtml(hint)}<br><small style="opacity:0.8; display:block; margin-top:8px;">Attempted: ${escapeHtml(url)}<br>Error: ${escapeHtml(error && error.toString ? error.toString() : String(error))}</small>`;
+        receiveErrorMessage.innerHTML = `${escapeHtml(hint)}<br><small style="opacity:0.8; display:block; margin-top:8px;">Attempted: ${escapeHtml(url)}<br>Error: ${escapeHtml(errText)}</small>`;
         receiveErrorMessage.style.display = 'block';
         receiveSuccessMessage.style.display = 'none';
         appendDirectLink(receiveErrorMessage, openBase);
 
         filesContainer.style.display = 'none';
+      }
+    }
+
+    // Normalize device URL to http for local IPs to avoid HTTPS attempts that will fail or be blocked.
+    function normalizeDeviceUrl(u) {
+      try {
+        if (!u) return u;
+        // If user provided a protocol-less host (e.g., 192.168.1.5:8080/list) ensure it starts with http://
+        if (!/^https?:\/\//i.test(u)) return `http://${u}`;
+
+        // If it's https to a private IP, switch to http
+        const m = u.match(/^https:\/\/(\d+\.\d+\.\d+\.\d+)(:\d+)?(.*)$/i);
+        if (m) {
+          return `http://${m[1]}${m[2] || ''}${m[3] || ''}`;
+        }
+
+        return u;
+      } catch (e) {
+        return u;
       }
     }
 
