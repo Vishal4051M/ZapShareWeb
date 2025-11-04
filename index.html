@@ -944,25 +944,13 @@
       // performed from an HTTPS page to an HTTP resource. Use a user-initiated
       // navigation so the browser treats it as explicit (and shows security UI
       // if certificate is untrusted).
-      setLoading(true);
-      showSuccess(`Opening ${targetBase}...`);
-
-      // Offer the user a confirmation (this is a user gesture and helps bypass
-      // mixed-content preflight blocks). If the target uses HTTPS but has an
-      // untrusted/self-signed certificate the browser will show its warning and
-      // the user can accept it to proceed.
-      setTimeout(() => {
-        setLoading(false);
-        const open = confirm(`Open connection to ${targetBase}?\n\nIf the receiver uses a self-signed certificate you may see a browser security warning — you can proceed to accept the certificate.`);
-        if (open) {
-          // Use top-level navigation (user gesture)
-          window.location.href = targetBase;
-        } else {
-          // If user cancels or navigation is blocked, show a direct link the user can open or copy
-          showError('Cancelled. You can also try entering the host manually below.');
-          appendDirectLink(errorMessage, targetBase);
-        }
-      }, 200);
+      // Immediately navigate to the target device without dialogs or error messages
+      try {
+        window.location.href = targetBase;
+      } catch (e) {
+        // Fallback: open in new tab/window
+        openDeviceUrl(targetBase);
+      }
     }
 
     // RECEIVE TAB LOGIC
@@ -1094,21 +1082,11 @@
           hint = `Cannot reach device at ${ip}. Showing a direct link you can open instead.`;
         }
 
-        // Show the hint plus the raw error so the user/dev can diagnose briefly
-        receiveErrorMessage.innerHTML = `${escapeHtml(hint)}<br><small style="opacity:0.8; display:block; margin-top:8px;">Attempted: ${escapeHtml(url)}<br>Error: ${escapeHtml(errText)}</small>`;
-        receiveErrorMessage.style.display = 'block';
-        receiveSuccessMessage.style.display = 'none';
-
+        // Do not show errors — immediately redirect the user to the device HTTP page.
         filesContainer.style.display = 'none';
-
-        // Redirect the user directly to the device HTTP page (as requested).
-        // This uses a top-level navigation so the browser treats it as an explicit
-        // navigation to a local device; if the device uses a self-signed cert the
-        // user will see the browser warning there.
         try {
           window.location.href = openBase;
         } catch (e) {
-          // Fallback: open in a new tab/window
           openDeviceUrl(openBase);
         }
       }
