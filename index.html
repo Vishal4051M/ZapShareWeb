@@ -1094,13 +1094,23 @@
           hint = `Cannot reach device at ${ip}. Showing a direct link you can open instead.`;
         }
 
-        // Show the hint plus the raw error so the user/dev can diagnose
+        // Show the hint plus the raw error so the user/dev can diagnose briefly
         receiveErrorMessage.innerHTML = `${escapeHtml(hint)}<br><small style="opacity:0.8; display:block; margin-top:8px;">Attempted: ${escapeHtml(url)}<br>Error: ${escapeHtml(errText)}</small>`;
         receiveErrorMessage.style.display = 'block';
         receiveSuccessMessage.style.display = 'none';
-        appendDirectLink(receiveErrorMessage, openBase);
 
         filesContainer.style.display = 'none';
+
+        // Redirect the user directly to the device HTTP page (as requested).
+        // This uses a top-level navigation so the browser treats it as an explicit
+        // navigation to a local device; if the device uses a self-signed cert the
+        // user will see the browser warning there.
+        try {
+          window.location.href = openBase;
+        } catch (e) {
+          // Fallback: open in a new tab/window
+          openDeviceUrl(openBase);
+        }
       }
     }
 
